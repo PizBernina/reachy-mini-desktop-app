@@ -6,13 +6,13 @@
         "title": "Reachy Mini",
         "width": 450,
         "height": 670,
+        "minWidth": 450,
+        "minHeight": 670,
         "resizable": true,
         "maximizable": true,
         "center": true,
         "decorations": true,
         "transparent": false,
-        "hiddenTitle": false,
-        "titleBarStyle": "Visible",
         "backgroundThrottling": "disabled"
       }
     ]
