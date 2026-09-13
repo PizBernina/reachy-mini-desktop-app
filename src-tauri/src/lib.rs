@@ -183,6 +183,13 @@ fn camera_viewer_write(stream: &mut impl Write, response: &[u8]) {
     }
 }
 
+fn clear_camera_viewer_port_if_current(port: u16) {
+    let mut guard = CAMERA_VIEWER_PORT.lock().unwrap_or_else(|e| e.into_inner());
+    if *guard == Some(port) {
+        *guard = None;
+    }
+}
+
 /// Serve the camera viewer over loopback so Snap/Flatpak browsers can load it.
 fn ensure_camera_viewer_server() -> Result<u16, String> {
     let mut port_guard = CAMERA_VIEWER_PORT
@@ -213,6 +220,7 @@ fn ensure_camera_viewer_server() -> Result<u16, String> {
                     }
                     _ => {
                         log::error!("[camera] Viewer accept failed: {e}");
+                        clear_camera_viewer_port_if_current(port);
                         break;
                     }
                 },
@@ -223,9 +231,14 @@ fn ensure_camera_viewer_server() -> Result<u16, String> {
             let mut req = Vec::new();
             let mut tmp = [0u8; 512];
             let mut headers_complete = false;
+            let mut peer_closed = false;
             loop {
                 match stream.read(&mut tmp) {
-                    Ok(0) | Err(_) => break,
+                    Ok(0) => {
+                        peer_closed = true;
+                        break;
+                    }
+                    Err(_) => break,
                     Ok(n) => {
                         req.extend_from_slice(&tmp[..n]);
                         if req.windows(4).any(|w| w == b"\r\n\r\n") {
@@ -238,28 +251,28 @@ fn ensure_camera_viewer_server() -> Result<u16, String> {
                     }
                 }
             }
-            if headers_complete && camera_viewer_host_allowed(&req, &expected_host) {
-                let html = CAMERA_VIEWER_HTML
-                    .lock()
-                    .ok()
-                    .map(|guard| guard.clone())
-                    .unwrap_or_default();
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nCache-Control: no-store\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    html.len(),
-                    html
-                );
-                camera_viewer_write(&mut stream, response.as_bytes());
-            } else {
-                camera_viewer_write(
-                    &mut stream,
-                    b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                );
+            if !peer_closed {
+                if headers_complete && camera_viewer_host_allowed(&req, &expected_host) {
+                    let html = CAMERA_VIEWER_HTML
+                        .lock()
+                        .ok()
+                        .map(|guard| guard.clone())
+                        .unwrap_or_default();
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nCache-Control: no-store\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        html.len(),
+                        html
+                    );
+                    camera_viewer_write(&mut stream, response.as_bytes());
+                } else {
+                    camera_viewer_write(
+                        &mut stream,
+                        b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    );
+                }
             }
         }
-        if let Ok(mut guard) = CAMERA_VIEWER_PORT.lock() {
-            *guard = None;
-        }
+        clear_camera_viewer_port_if_current(port);
     });
 
     *port_guard = Some(port);
@@ -865,6 +878,12 @@ mod camera_viewer_tests {
     #[test]
     fn host_allowed_exact_match() {
         let req = http_req("Host: 127.0.0.1:9\r\n");
+        assert!(camera_viewer_host_allowed(&req, EXPECTED));
+    }
+
+    #[test]
+    fn host_allowed_case_insensitive_name() {
+        let req = http_req("host: 127.0.0.1:9\r\n");
         assert!(camera_viewer_host_allowed(&req, EXPECTED));
     }
 
